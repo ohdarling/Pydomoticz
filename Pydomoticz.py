@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-import json,urllib
+import json, urllib2
 import datetime,time
 
 #  Copyright 2017 Maxime MADRAU
@@ -10,105 +10,112 @@ import datetime,time
 This module allows to use Domoticz devices with simple Python commands
 '''
 
-def jsonReponse(*args):
-	return json.loads(urllib.urlopen(''.join(args)).read())
+DeviceTypeLight = 'light'
+DeviceTypeWeather = 'weather'
+DeviceTypeTemp = 'temp'
+DeviceTypeUtility = 'utility'
+
+url_opener = urllib2.build_opener()
 
 class Device(object):
-	def __init__(self,parent,idx):
-		self.parent = self._parent = parent
-		self.idx = self._idx = idx
-		
-	def __getattr__(self, key):
-		""" look for a 'save' attribute, or just 
-		  return whatever attribute was specified """
-		key = key.replace('_','')
-		reponse = jsonReponse(self._parent._url,'/json.htm?type=devices&rid=%i'%self._idx)['result'][0]
-		for keyToTest in reponse.keys():
-			low = keyToTest.lower()
-			if low == key.lower():
-				return reponse[keyToTest]
-		
-		return None
-			
-	def __getitem__(self,item):
-		reponse = jsonReponse(self._parent._url,'/json.htm?type=devices&rid=%i'%self._idx)['result'][0]
-		return reponse[item]
-		
-	def keys(self):
-		reponse = jsonReponse(self._parent._url,'/json.htm?type=devices&rid=%i'%self._idx)['result'][0]
-		return reponse.keys()
-		
-	def __repr__(self):
-		return '<Domoticz Device at idx %i>'%self._idx
-		
-	def on(self):
-		return jsonReponse(self._parent._url,'/json.htm?type=command&param=switchlight&idx=%i&switchcmd=On'%self._idx)
-		
-	def off(self):
-		return jsonReponse(self._parent._url,'/json.htm?type=command&param=switchlight&idx=%i&switchcmd=Off'%self._idx)
-		
-	def setLevel(self,level):
-		return jsonReponse(self._parent._url,'/json.htm?type=command&param=switchlight&idx=%i&switchcmd=Set%%20Level&level=%s'%(self._idx,str(level)))
-			
-	def __call__(self,cmd):
-		return jsonReponse(self._parent._url,'/json.htm?type=command&param=switchlight&idx=%i&switchcmd=%s'%(self._idx,cmd))
-			
+    def __init__(self,parent,dev):
+        self.parent = self._parent = parent
+        self.raw = dev;
+        # self.idx = self._idx = int(dev['idx'])
+
+    def __getattr__(self, key):
+        return self.raw[key] if key in self.raw else ''
+
+    def keys(self):
+        reponse = jsonReponse(self._parent._url,'/json.htm?type=devices&rid=%i'%self.idx)['result'][0]
+        return reponse.keys()
+
+    def __repr__(self):
+        return '<Domoticz Device %s: %s>' % (self.idx, self.Name)
+
+    def on(self):
+        return self.parent.apiRequest('/json.htm?type=command&param=switchlight&idx=%s&switchcmd=On'%self.idx)
+
+    def off(self):
+        return self.parent.apiRequest('/json.htm?type=command&param=switchlight&idx=%s&switchcmd=Off'%self.idx)
+
+    def setLevel(self,level):
+        return self.parent.apiRequest('/json.htm?type=command&param=switchlight&idx=%s&switchcmd=Set%%20Level&level=%s'%(self.idx,str(level)))
+
+    def __call__(self,cmd):
+        return self.parent.apiRequest('/json.htm?type=command&param=switchlight&idx=%s&switchcmd=%s'%(self.idx,cmd))
+
+    def statusDesc(self):
+        status = self.Data if self.Data else self.Status
+        if self.SubType == 'Selector Switch':
+            status = self.LevelNames.split('|')[self.LevelInt/10]
+        return '%s: %s' % (self.Name, status)
+
 
 class Domoticz(object):
-	def __init__(self,ip,**kwargs):
-		user = kwargs.get('user','')
-		password = kwargs.get('password',None)
-		fullUser = user if not password else user+':'+password
-		self.user = user
-		self.password = password
-		self._fullUser = fullUser
-		self.ip = ip
-		self._url = 'http://%s@%s'%(fullUser,ip)
-		self.connect()
-		
-	def connect(self):
-		reponse = jsonReponse(self._url,'/json.htm?type=devices&used=true&filter=all&favorite=1')
-		now = datetime.datetime.now()
-		self.status = reponse['status']
-		self.title = reponse['title']
-		self.ServerTime = datetime.datetime.strptime(reponse['ServerTime'],'%Y-%m-%d %H:%M:%S')
-		self.sunrise = datetime.datetime(now.year,now.month,now.day,hour=int(reponse['Sunrise'].split(':')[0]),minute=int(reponse['Sunrise'].split(':')[1]),second=0)
-		self.sunset = datetime.datetime(now.year,now.month,now.day,hour=int(reponse['Sunset'].split(':')[0]),minute=int(reponse['Sunset'].split(':')[1]),second=0)
-		self.actTime = reponse['ActTime']
-		self.startupTime = now - datetime.timedelta(seconds=self.actTime)
-		devicesJson = reponse['result']
-		self.devices = []
-		for dev in devicesJson:
-			self.devices.append(Device(self,int(dev['idx'])))
-			
-	def getDevices(self,**kwargs):
-		matches = []
-		for dev in self.devices:
-			canMatch = True
-			for arg in kwargs.keys():
-				val = kwargs[arg]
-				
-				if str(dev.__getattr__(arg)) != str(val):
-					canMatch = False
-					break
-					
-			if canMatch:
-				matches.append(dev)
-			else:
-				continue
-				
-		return matches
-			
-				
-			
-	def __call__(**kwargs):
-		str_ = ""
-		for argument in kwargs:
-			str_ += '&%s=%s'%argument
-		return jsonReponse(self._url,str_)
-	
-	def __repr__(self):
-		return '<Domoticz Server at "%s">'%self.ip
-		
-		
+    def __init__(self,ip,**kwargs):
+        user = kwargs.get('user','')
+        password = kwargs.get('password',None)
+        fullUser = user if not password else user+':'+password
+        isssl = kwargs.get('isssl', False)
+        port = kwargs.get('port', 443 if isssl else 80)
+        portstr = '' if ((isssl and port == 443) or (not isssl and port == 80)) else ':%d' % (port)
+        self.user = user
+        self.password = password
+        self._fullUser = fullUser
+        self.ip = ip
+        self.port = port
+        self.isssl = isssl
+        self._url = 'http%s://%s%s%s%s'%('s' if isssl else '', fullUser, '@' if fullUser else '', ip, portstr)
+
+    def apiRequest(self, path):
+        url = self._url + path
+        print 'request', url
+        body = url_opener.open(url, timeout=10).read()
+        response = json.loads(body)
+        return response
+
+    def updateServerStatus(self, response):
+        now = datetime.datetime.now()
+        self.status = response['status']
+        self.title = response['title']
+        self.ServerTime = datetime.datetime.strptime(response['ServerTime'],'%Y-%m-%d %H:%M:%S')
+        self.sunrise = datetime.datetime(now.year,now.month,now.day,hour=int(response['Sunrise'].split(':')[0]),minute=int(response['Sunrise'].split(':')[1]),second=0)
+        self.sunset = datetime.datetime(now.year,now.month,now.day,hour=int(response['Sunset'].split(':')[0]),minute=int(response['Sunset'].split(':')[1]),second=0)
+        self.actTime = response['ActTime']
+        self.startupTime = now - datetime.timedelta(seconds=self.actTime)
+
+    def getDeviceByIdx(self, idx):
+        response = self.apiRequest('/json.htm?type=devices&rid=%s' % idx)
+        self.updateServerStatus(response)
+        dev = Device(self, response['result'][0]) if len(response['result']) > 0 else None
+        return dev
+
+    def getDevicesByType(self, type='all', devFilter=None):
+        ret = []
+        if type == 'scenes':
+            response = self.apiRequest('/json.htm?type=scenes')
+        else:
+            response = self.apiRequest('/json.htm?type=devices&used=true&filter=%s' % type)
+        self.updateServerStatus(response)
+        if devFilter is None:
+            for dev in response['result']:
+                ret.append(Device(self, dev))
+        else:
+            for dev in response['result']:
+                d = Device(self, dev)
+                if devFilter(d):
+                    ret.append(d)
+        return ret
+
+    def __call__(**kwargs):
+        str_ = ""
+        for argument in kwargs:
+            str_ += '&%s=%s'%argument
+        return jsonReponse(self._url,str_)
+
+    def __repr__(self):
+        return '<Domoticz Server at "%s">'%self.ip
+
+
 
